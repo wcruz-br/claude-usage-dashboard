@@ -78,7 +78,7 @@ The script queries `GET https://api.anthropic.com/api/oauth/usage` with the head
 
 Thanks to everyone who has contributed to this project:
 
-- [Tiago Miranda](https://github.com/mirandaftiago) — User-Agent honesty refactor
+- [Tiago Miranda](https://github.com/mirandaftiago) — User-Agent honesty refactor, ANSI clear screen, HTTP error body logging
 
 ## License
 

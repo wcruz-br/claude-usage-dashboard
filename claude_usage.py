@@ -51,7 +51,12 @@ class UsageLimits(TypedDict):
 CREDENTIALS_PATH = Path.home() / ".claude" / ".credentials.json"
 USAGE_ENDPOINT = "https://api.anthropic.com/api/oauth/usage"
 ANTHROPIC_BETA_HEADER = "oauth-2025-04-20"
-USER_AGENT = "claude-code/2.1.58"
+# Identify this script honestly instead of impersonating the official
+# Claude Code CLI. Spoofing a specific CLI version is brittle — if
+# Anthropic ever filters by User-Agent, a stale hardcoded version will
+# break silently. A clear UA also makes it obvious this is an
+# independent tool, not official Anthropic software.
+USER_AGENT = "claude-usage-dashboard/1.0"
 REFRESH_INTERVAL_SECONDS = 300  # 5 minutes
 BAR_WIDTH = 30
 

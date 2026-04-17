@@ -231,7 +231,19 @@ def run() -> None:
             sys.exit(1)
 
         except urllib.error.HTTPError as exc:
+            # The usage endpoint is undocumented and can change without notice.
+            # Logging the response body on errors turns "HTTP 403: Forbidden"
+            # (opaque) into something that usually tells us what actually
+            # happened: auth scheme changed, endpoint moved, deprecation
+            # notice, etc. Truncated to 200 chars to avoid flooding the
+            # terminal if the server returns a full HTML error page.
+            try:
+                body = exc.read().decode("utf-8", "replace")[:200]
+            except Exception:  # pylint: disable=broad-except
+                body = "(could not read response body)"
             print(f"\n{RED}HTTP error {exc.code}:{RESET} {exc.reason}")
+            if body:
+                print(f"  {DIM}{body}{RESET}")
             if exc.code == 401:
                 print(
                     "Invalid or expired token. Run 'claude' to renew "

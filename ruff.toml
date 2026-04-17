@@ -26,3 +26,6 @@ select = [
     "D413",
 ]
 ignore = ["B008", "N999", "S104", "TRY003", "S310", "S605"]
+
+[lint.mccabe]
+max-complexity = 12

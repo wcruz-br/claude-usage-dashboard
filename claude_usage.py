@@ -6,9 +6,9 @@ the undocumented endpoint https://api.anthropic.com/api/oauth/usage
 every 5 minutes.
 
 Dependencies: stdlib only (Python 3.11+)
-Requires 3.11 for: datetime.UTC (3.11+) and datetime.fromisoformat() with "Z" suffix (3.11+)
+Requires 3.11 for: datetime.UTC and datetime.fromisoformat() with "Z" suffix
 
-Note: undocumented endpoint, subject to change without notice. If it stops working,
+Note: undocumented endpoint, subject to change without notice! If it stops working,
 check whether the credentials file format changed or the endpoint was updated.
 As a last resort, consider migrating to `ccusage`.
 """
@@ -152,7 +152,12 @@ def format_resets_at(resets_at: str | None) -> str:
             return "expired"
         hours, remainder = divmod(total_seconds, 3600)
         minutes = remainder // 60
-        return f"{local_dt.strftime('%H:%M')} (in {hours}h{minutes:02d}m)"
+        if hours >= 24:
+            days, remaining_hours = divmod(hours, 24)
+            time_str = f"{days}d{remaining_hours}h" if remaining_hours else f"{days}d"
+            return f"in {time_str}"
+        time_str = f"{hours}h{minutes:02d}m"
+        return f"in {time_str} ({local_dt.strftime('%H:%M')})"
     except (ValueError, TypeError):
         return resets_at
 

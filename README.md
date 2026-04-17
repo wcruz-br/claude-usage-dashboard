@@ -12,7 +12,7 @@ Real-time Claude Code usage monitor for the terminal (Pro/Max plans).
 No external dependencies. Clone the repository and run directly:
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/wcruz-br/claude-usage-dashboard.git
 cd claude-usage-dashboard
 ```
 
@@ -26,17 +26,7 @@ The dashboard refreshes automatically every 5 minutes. Press `Ctrl+C` to exit.
 
 ### Example output
 
-```
-  Claude Code — Usage Monitor
-  Updated at 04/16/2026 14:32:10 · next refresh in 5 min
-  ──────────────────────────────────────────────────────────────────
-
-  5-hour window
-  ████████░░░░░░░░░░░░░░░░░░░░░░  27.0%  reset: 17:45 (in 3h12m)
-
-  7-day window
-  ██████████████░░░░░░░░░░░░░░░░  47.0%  reset: 04/20 09:00 (in 3d18h)
-```
+![output](printscreen.png)
 
 Bars change color based on utilization: green (< 60%), yellow (60–84%), red (≥ 85%).
 

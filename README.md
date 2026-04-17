@@ -1,6 +1,6 @@
 # claude-usage-dashboard
 
-Real-time Claude Code (Pro/Max plans) usage monitor for the terminal.
+Real-time Claude Code usage monitor for the terminal (Pro/Max plans).
 
 ## Prerequisites
 
@@ -79,6 +79,10 @@ The script queries `GET https://api.anthropic.com/api/oauth/usage` with the head
 2. Create a feature branch (`git checkout -b feature/your-feature`)
 3. Commit your changes following [Conventional Commits](https://www.conventionalcommits.org/)
 4. Open a pull request describing what changed and why
+
+## Author
+
+**Willian Cruz** — [wcruz.br@gmail.com](mailto:wcruz.br@gmail.com) · [github.com/wcruz-br](https://github.com/wcruz-br)
 
 ## License
 

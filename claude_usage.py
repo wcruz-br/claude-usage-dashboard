@@ -14,7 +14,6 @@ As a last resort, consider migrating to `ccusage`.
 """
 
 import json
-import os
 import sys
 import time
 import urllib.error
@@ -184,7 +183,12 @@ def render_window(label: str, window: UsageWindow | None) -> str:
 
 
 def clear_screen() -> None:
-    os.system("clear" if os.name == "posix" else "cls")
+    # Use an ANSI escape sequence instead of shelling out to clear/cls.
+    # \033[2J clears the entire screen, \033[H moves the cursor to the
+    # top-left. This avoids spawning a subprocess every refresh (300s)
+    # and works consistently across macOS, Linux, and modern Windows
+    # terminals (Windows Terminal, VS Code, PowerShell 7+).
+    print("\033[2J\033[H", end="", flush=True)
 
 
 def render_dashboard(usage: UsageLimits, fetched_at: datetime) -> None:

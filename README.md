@@ -72,7 +72,13 @@ The script queries `GET https://api.anthropic.com/api/oauth/usage` with the head
 
 ## Author
 
-**Willian Cruz** — [wcruz.br@gmail.com](mailto:wcruz.br@gmail.com) · [github.com/wcruz-br](https://github.com/wcruz-br)
+**[Willian Cruz](https://github.com/wcruz-br)** · [LinkedIn](https://linkedin.com/in/wcruz) · [wcruz.br@gmail.com](mailto:wcruz.br@gmail.com)
+
+## Contributors
+
+Thanks to everyone who has contributed to this project:
+
+- [Tiago Miranda](https://github.com/mirandaftiago) — User-Agent honesty refactor
 
 ## License
 

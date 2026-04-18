@@ -1,11 +1,11 @@
-name: Lint
+name: CI
 
 on:
   pull_request:
     branches: [main]
 
 jobs:
-  ruff:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -13,5 +13,15 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install ruff
-      - run: ruff check claude_usage.py
-      - run: ruff format --check claude_usage.py
+      - run: ruff check claude_usage.py tests/
+      - run: ruff format --check claude_usage.py tests/
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install pytest
+      - run: pytest tests/ -v

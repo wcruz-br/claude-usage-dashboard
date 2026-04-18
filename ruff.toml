@@ -29,3 +29,6 @@ ignore = ["B008", "N999", "S104", "TRY003", "S310", "S605", "S404", "S603", "S60
 
 [lint.mccabe]
 max-complexity = 12
+
+[lint.extend-per-file-ignores]
+"tests/*" = ["S101"]

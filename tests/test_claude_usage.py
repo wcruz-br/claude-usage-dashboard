@@ -91,7 +91,8 @@ class TestFormatResetsAt:
     def test_under_24h_shows_hours_and_minutes(self) -> None:
         result = cu.format_resets_at(_future_iso(3 * 3600 + 15 * 60))
         # Allow ±1 min tolerance: a few ms elapse between _future_iso() and now()
-        assert result.startswith("in 3h1") and "m (" in result
+        assert result.startswith("in 3h1")
+        assert "m (" in result
 
     def test_over_24h_shows_days(self) -> None:
         result = cu.format_resets_at(_future_iso(49 * 3600))

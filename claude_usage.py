@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
 Real-time usage dashboard for Claude Code (Pro/Max plans).
-Reads OAuth credentials from ~/.claude/.credentials.json and polls
-the undocumented endpoint https://api.anthropic.com/api/oauth/usage
-every 5 minutes.
+
+Reads OAuth credentials from the platform-appropriate secure store used by
+Claude Code (macOS Keychain, Windows Credential Manager, or the JSON file at
+~/.claude/.credentials.json on Linux/WSL) and polls the undocumented endpoint
+https://api.anthropic.com/api/oauth/usage every 5 minutes.
 
 Dependencies: stdlib only (Python 3.11+)
 Requires 3.11 for: datetime.UTC and datetime.fromisoformat() with "Z" suffix
@@ -14,6 +16,8 @@ As a last resort, consider migrating to `ccusage`.
 """
 
 import json
+import platform
+import subprocess
 import sys
 import time
 import urllib.error
@@ -59,27 +63,105 @@ USER_AGENT = "claude-usage-dashboard/1.0"
 REFRESH_INTERVAL_SECONDS = 300  # 5 minutes
 BAR_WIDTH = 30
 
+# Service/target name used by Claude Code when storing credentials in the
+# OS-native secret store. On macOS this is the Keychain service name; on
+# Windows it's the Credential Manager target name. Identified empirically
+# via `security dump-keychain | grep -i claude` on macOS.
+KEYCHAIN_SERVICE_NAME = "Claude Code-credentials"
+
 
 # ---------------------------------------------------------------------------
 # Credentials
 # ---------------------------------------------------------------------------
 
 
-def load_credentials() -> OAuthCredentials:
-    """Read the OAuth token from the Claude Code credentials file."""
-    if not CREDENTIALS_PATH.exists():
-        raise FileNotFoundError(
-            f"Credentials file not found: {CREDENTIALS_PATH}\n"
-            "Run 'claude' and log in before using this script."
+def _load_from_macos_keychain() -> dict | None:
+    """Read credentials from macOS Keychain via the built-in `security` CLI."""
+    try:
+        result = subprocess.run(
+            ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE_NAME, "-w"],
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
+        if result.returncode == 0 and result.stdout.strip():
+            return json.loads(result.stdout.strip())
+    except (json.JSONDecodeError, subprocess.SubprocessError, FileNotFoundError):
+        pass
+    return None
 
-    raw = CREDENTIALS_PATH.read_text(encoding="utf-8")
-    data = json.loads(raw)
+
+def _load_from_windows_credential_manager() -> dict | None:
+    """Read credentials from Windows Credential Manager via PowerShell.
+
+    Note: untested on a real Windows machine — known limitation with SecureString
+    handling. Falls back to the credentials file gracefully.
+    See: https://github.com/wcruz-br/claude-usage-dashboard/issues/5
+    """
+    ps_script = (
+        f"Get-StoredCredential -Target '{KEYCHAIN_SERVICE_NAME}' "
+        "| Select-Object -ExpandProperty Password "
+        "| ForEach-Object { "
+        "[System.Text.Encoding]::UTF8.GetString($_) }"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps_script],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return json.loads(result.stdout.strip())
+    except (json.JSONDecodeError, subprocess.SubprocessError, FileNotFoundError):
+        pass
+    return None
+
+
+def _load_from_credentials_file() -> dict | None:
+    """Read credentials from ~/.claude/.credentials.json."""
+    if CREDENTIALS_PATH.exists():
+        try:
+            return json.loads(CREDENTIALS_PATH.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+    return None
+
+
+def load_credentials() -> OAuthCredentials:
+    """Read the OAuth token from the platform-appropriate secure store.
+
+    Resolution order:
+        1. macOS Keychain (on Darwin)
+        2. Windows Credential Manager (on Windows)
+        3. ~/.claude/.credentials.json (universal fallback, used on Linux/WSL)
+
+    Raises FileNotFoundError if no credentials are found in any location.
+    """
+    data: dict | None = None
+    system = platform.system()
+
+    if system == "Darwin":
+        data = _load_from_macos_keychain()
+    elif system == "Windows":
+        data = _load_from_windows_credential_manager()
+
+    if data is None:
+        data = _load_from_credentials_file()
+
+    if data is None:
+        raise FileNotFoundError(
+            "Claude Code credentials not found. Checked:\n"
+            f"  macOS:   Keychain (service '{KEYCHAIN_SERVICE_NAME}')\n"
+            f"  Linux:   {CREDENTIALS_PATH}\n"
+            f"  Windows: Credential Manager (target '{KEYCHAIN_SERVICE_NAME}')\n"
+            "Run 'claude' in your terminal and log in before using this script."
+        )
 
     if "claudeAiOauth" not in data:
         raise KeyError(
-            "'claudeAiOauth' key missing from .credentials.json. "
-            "The file format may have changed."
+            "'claudeAiOauth' key missing from stored credentials. "
+            "The credential format may have changed."
         )
 
     return data["claudeAiOauth"]

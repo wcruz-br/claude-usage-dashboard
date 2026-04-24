@@ -17,6 +17,7 @@ As a last resort, consider migrating to `ccusage`.
 
 import json
 import platform
+import select
 import subprocess
 import sys
 import time
@@ -292,7 +293,56 @@ def render_dashboard(usage: UsageLimits, fetched_at: datetime) -> None:
     print(render_window("5-hour window", usage.get("five_hour")), end="")
     print(render_window("7-day window ", usage.get("seven_day")), end="")
 
-    print(f"  {DIM}Press Ctrl+C to exit.{RESET}\n")
+    print(f"\n  {DIM}Press Ctrl+C to exit · SPACE to refresh now{RESET}\n")
+
+
+# ---------------------------------------------------------------------------
+# Interruptible sleep
+# ---------------------------------------------------------------------------
+
+
+def _interruptible_sleep_unix(seconds: int) -> None:
+    """Wait up to `seconds`, returning early if SPACE is pressed (Unix/macOS)."""
+    import termios
+    import tty
+
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)
+        end_time = time.monotonic() + seconds
+        while True:
+            remaining = end_time - time.monotonic()
+            if remaining <= 0:
+                break
+            ready, _, _ = select.select([sys.stdin], [], [], min(remaining, 1.0))
+            if ready:
+                if sys.stdin.read(1) == " ":
+                    break
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+
+def _interruptible_sleep_windows(seconds: int) -> None:
+    """Wait up to `seconds`, returning early if SPACE is pressed (Windows)."""
+    import msvcrt
+
+    end_time = time.monotonic() + seconds
+    while time.monotonic() < end_time:
+        if msvcrt.kbhit() and msvcrt.getwch() == " ":  # type: ignore[attr-defined]
+            break
+        time.sleep(0.1)
+
+
+def _interruptible_sleep(seconds: int) -> None:
+    """Sleep for up to `seconds`, interrupted immediately by a SPACE keypress."""
+    system = platform.system()
+    if system == "Windows":
+        _interruptible_sleep_windows(seconds)
+    elif sys.stdin.isatty():
+        _interruptible_sleep_unix(seconds)
+    else:
+        time.sleep(seconds)
 
 
 # ---------------------------------------------------------------------------
@@ -357,7 +407,7 @@ def run() -> None:
             print(f"\n{RED}Unexpected error:{RESET} {exc}\n")
 
         try:
-            time.sleep(REFRESH_INTERVAL_SECONDS)
+            _interruptible_sleep(REFRESH_INTERVAL_SECONDS)
         except KeyboardInterrupt:
             print(f"\n{DIM}Monitor stopped.{RESET}\n")
             sys.exit(0)

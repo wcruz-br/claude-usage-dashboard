@@ -15,6 +15,7 @@ check whether the credentials file format changed or the endpoint was updated.
 As a last resort, consider migrating to `ccusage`.
 """
 
+import ctypes
 import json
 import platform
 import select
@@ -70,6 +71,83 @@ BAR_WIDTH = 30
 # via `security dump-keychain | grep -i claude` on macOS.
 KEYCHAIN_SERVICE_NAME = "Claude Code-credentials"
 
+# Windows Credential Manager constants
+CRED_TYPE_GENERIC = 1
+CRED_PERSIST_SESSION = 2
+
+
+# ---------------------------------------------------------------------------
+# Windows Credential Manager (ctypes)
+# ---------------------------------------------------------------------------
+
+
+def _load_from_windows_credential_manager() -> dict | None:
+    """Read credentials from Windows Credential Manager via ctypes + CredReadW.
+
+    Uses the Windows API directly (advapi32.dll) to avoid dependency on the
+    CredentialManager PowerShell module and handle SecureString correctly.
+    """
+    if platform.system() != "Windows":
+        return None
+
+    try:
+        # Load advapi32.dll
+        advapi32 = ctypes.windll.advapi32
+
+        # Define CREDENTIALW structure
+        class CREDENTIALW(ctypes.Structure):
+            _fields_ = [
+                ("Flags", ctypes.c_ulong),
+                ("Type", ctypes.c_ulong),
+                ("TargetName", ctypes.c_wchar_p),
+                ("Comment", ctypes.c_wchar_p),
+                ("LastWritten", ctypes.c_ulonglong),
+                ("CredentialBlobSize", ctypes.c_ulong),
+                ("CredentialBlob", ctypes.c_void_p),
+                ("Persist", ctypes.c_ulong),
+                ("AttributeCount", ctypes.c_ulong),
+                ("Attributes", ctypes.c_void_p),
+                ("TargetAlias", ctypes.c_wchar_p),
+                ("UserName", ctypes.c_wchar_p),
+            ]
+
+        # Define pointer type for CREDENTIALW
+        PCREDENTIALW = ctypes.POINTER(CREDENTIALW)
+
+        # Call CredReadW
+        cred_ptr = PCREDENTIALW()
+        target_name = KEYCHAIN_SERVICE_NAME
+
+        result = advapi32.CredReadW(
+            target_name,
+            CRED_TYPE_GENERIC,
+            0,
+            ctypes.byref(cred_ptr),
+        )
+
+        if result == 0:
+            # Failed to read credential
+            return None
+
+        try:
+            cred = cred_ptr.contents
+            if cred.CredentialBlob and cred.CredentialBlobSize > 0:
+                # Read the credential blob as bytes
+                blob_bytes = ctypes.string_at(
+                    cred.CredentialBlob, cred.CredentialBlobSize
+                )
+                # Decode as UTF-8 and parse as JSON
+                blob_str = blob_bytes.decode("utf-8")
+                return json.loads(blob_str)
+        finally:
+            # Free the credential memory
+            advapi32.CredFree(cred_ptr)
+
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError, AttributeError):
+        pass
+
+    return None
+
 
 # ---------------------------------------------------------------------------
 # Credentials
@@ -81,33 +159,6 @@ def _load_from_macos_keychain() -> dict | None:
     try:
         result = subprocess.run(
             ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE_NAME, "-w"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return json.loads(result.stdout.strip())
-    except (json.JSONDecodeError, subprocess.SubprocessError, FileNotFoundError):
-        pass
-    return None
-
-
-def _load_from_windows_credential_manager() -> dict | None:
-    """Read credentials from Windows Credential Manager via PowerShell.
-
-    Note: untested on a real Windows machine — known limitation with SecureString
-    handling. Falls back to the credentials file gracefully.
-    See: https://github.com/wcruz-br/claude-usage-dashboard/issues/5
-    """
-    ps_script = (
-        f"Get-StoredCredential -Target '{KEYCHAIN_SERVICE_NAME}' "
-        "| Select-Object -ExpandProperty Password "
-        "| ForEach-Object { "
-        "[System.Text.Encoding]::UTF8.GetString($_) }"
-    )
-    try:
-        result = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", ps_script],
             capture_output=True,
             text=True,
             timeout=5,
@@ -237,180 +288,118 @@ def format_resets_at(resets_at: str | None) -> str:
         total_seconds = int(remaining.total_seconds())
         if total_seconds < 0:
             return "expired"
-        hours, remainder = divmod(total_seconds, 3600)
-        minutes = remainder // 60
-        if hours >= 24:
-            days, remaining_hours = divmod(hours, 24)
-            time_str = f"{days}d{remaining_hours}h" if remaining_hours else f"{days}d"
-            return f"in {time_str}"
-        time_str = f"{hours}h{minutes:02d}m"
-        return f"in {time_str} ({local_dt.strftime('%H:%M')})"
-    except (ValueError, TypeError):
+
+        days = total_seconds // 86400
+        hours = (total_seconds % 86400) // 3600
+        minutes = (total_seconds % 3600) // 60
+
+        if days > 0:
+            if hours == 0 and minutes == 0:
+                return f"in {days}d"
+            return f"in {days}d{hours}h"
+        return f"in {hours}h{minutes}m ({local_dt.strftime('%H:%M')})"
+    except (ValueError, TypeError, OverflowError):
         return resets_at
 
 
-def render_window(label: str, window: UsageWindow | None) -> str:
-    if window is None:
-        return f"  {BOLD}{label}{RESET}: {DIM}not available{RESET}\n"
+def render_dashboard(limits: UsageLimits) -> str:
+    """Render the usage dashboard as a string."""
+    lines: list[str] = []
 
-    utilization = window.get("utilization", 0.0) / 100
-    pct = utilization * 100
-    resets_at = window.get("resets_at")
+    # Header
+    lines.append(f"{BOLD}{WHITE}Claude Code Usage{RESET}")
+    lines.append(f"{DIM}Refreshes every {REFRESH_INTERVAL_SECONDS // 60} minutes • Ctrl+C to exit{RESET}")
+    lines.append("")
 
-    bar = render_bar(utilization)
-    color = color_for_utilization(utilization)
-    pct_str = f"{color}{BOLD}{pct:5.1f}%{RESET}"
-    resets_str = format_resets_at(resets_at)
+    # Five-hour window
+    five_hour = limits.get("five_hour")
+    if five_hour:
+        util = five_hour.get("utilization", 0) / 100
+        bar = render_bar(util)
+        resets = format_resets_at(five_hour.get("resets_at"))
+        lines.append(f"{CYAN}5-hour:{RESET} {bar} {util * 100:.1f}%")
+        lines.append(f"{DIM}        Resets {resets}{RESET}")
+    else:
+        lines.append(f"{CYAN}5-hour:{RESET} {DIM}—{RESET}")
 
-    lines = [
-        f"  {BOLD}{label}{RESET}",
-        f"  {bar} {pct_str}  {DIM}reset: {resets_str}{RESET}",
-        "",
-    ]
+    lines.append("")
+
+    # Seven-day window
+    seven_day = limits.get("seven_day")
+    if seven_day:
+        util = seven_day.get("utilization", 0) / 100
+        bar = render_bar(util)
+        resets = format_resets_at(seven_day.get("resets_at"))
+        lines.append(f"{CYAN}7-day:{RESET}  {bar} {util * 100:.1f}%")
+        lines.append(f"{DIM}        Resets {resets}{RESET}")
+    else:
+        lines.append(f"{CYAN}7-day:{RESET}  {DIM}—{RESET}")
+
     return "\n".join(lines)
 
 
 def clear_screen() -> None:
-    # Use an ANSI escape sequence instead of shelling out to clear/cls.
-    # \033[2J clears the entire screen, \033[H moves the cursor to the
-    # top-left. This avoids spawning a subprocess every refresh (300s)
-    # and works consistently across macOS, Linux, and modern Windows
-    # terminals (Windows Terminal, VS Code, PowerShell 7+).
-    print("\033[2J\033[H", end="", flush=True)
-
-
-def render_dashboard(usage: UsageLimits, fetched_at: datetime) -> None:
-    clear_screen()
-    timestamp = fetched_at.strftime("%Y-%m-%d %H:%M:%S")
-
-    print(f"\n{BOLD}{CYAN}  Claude Code — Usage Monitor{RESET}")
-    print(
-        f"  {DIM}Updated at {timestamp} · "
-        f"next refresh in {REFRESH_INTERVAL_SECONDS // 60} min{RESET}"
-    )
-    print(f"  {DIM}{'─' * 50}{RESET}\n")
-
-    print(render_window("5-hour window", usage.get("five_hour")), end="")
-    print(render_window("7-day window ", usage.get("seven_day")), end="")
-
-    print(f"\n  {DIM}Press Ctrl+C to exit · SPACE to refresh now{RESET}\n")
+    """Clear the terminal screen and move cursor to top-left."""
+    # ANSI escape sequence: clear screen + move cursor home
+    sys.stdout.write("\033[2J\033[H")
+    sys.stdout.flush()
 
 
 # ---------------------------------------------------------------------------
-# Interruptible sleep
-# ---------------------------------------------------------------------------
-
-
-def _interruptible_sleep_unix(seconds: int) -> None:
-    """Wait up to `seconds`, returning early if SPACE is pressed (Unix/macOS)."""
-    import termios
-    import tty
-
-    fd = sys.stdin.fileno()
-    old_settings = termios.tcgetattr(fd)
-    try:
-        tty.setcbreak(fd)
-        end_time = time.monotonic() + seconds
-        while True:
-            remaining = end_time - time.monotonic()
-            if remaining <= 0:
-                break
-            ready, _, _ = select.select([sys.stdin], [], [], min(remaining, 1.0))
-            if ready:
-                if sys.stdin.read(1) == " ":
-                    break
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-
-
-def _interruptible_sleep_windows(seconds: int) -> None:
-    """Wait up to `seconds`, returning early if SPACE is pressed (Windows)."""
-    import msvcrt
-
-    end_time = time.monotonic() + seconds
-    while time.monotonic() < end_time:
-        if msvcrt.kbhit() and msvcrt.getwch() == " ":  # type: ignore[attr-defined]
-            break
-        time.sleep(0.1)
-
-
-def _interruptible_sleep(seconds: int) -> None:
-    """Sleep for up to `seconds`, interrupted immediately by a SPACE keypress."""
-    system = platform.system()
-    if system == "Windows":
-        _interruptible_sleep_windows(seconds)
-    elif sys.stdin.isatty():
-        _interruptible_sleep_unix(seconds)
-    else:
-        time.sleep(seconds)
-
-
-# ---------------------------------------------------------------------------
-# Main loop
+# Main
 # ---------------------------------------------------------------------------
 
 
 def run() -> None:
-    print(f"{CYAN}Starting Claude Code usage monitor...{RESET}")
+    """Main loop: fetch and display usage statistics."""
+    print(f"{DIM}Loading credentials...{RESET}", flush=True)
+    credentials = load_credentials()
 
-    while True:
-        try:
-            credentials = load_credentials()
+    if is_token_expired(credentials):
+        print(f"{RED}Error: Access token expired. Please re-authenticate.{RESET}")
+        print(f"{DIM}Run 'claude' in your terminal to log in again.{RESET}")
+        sys.exit(1)
 
-            if is_token_expired(credentials):
-                print(
-                    f"\n{YELLOW}Token expired.{RESET} Run 'claude' once to renew "
-                    "credentials automatically, then restart this script.\n"
-                )
-                sys.exit(1)
+    access_token = credentials["accessToken"]
+    last_refresh = 0.0
 
-            usage = fetch_usage(credentials["accessToken"])
-            render_dashboard(usage, datetime.now().astimezone())
+    print(f"{DIM}Press Ctrl+C to exit{RESET}\n", flush=True)
 
-        except FileNotFoundError as exc:
-            print(f"\n{RED}Error:{RESET} {exc}\n")
-            sys.exit(1)
+    try:
+        while True:
+            now = time.time()
 
-        except urllib.error.HTTPError as exc:
-            # The usage endpoint is undocumented and can change without notice.
-            # Logging the response body on errors turns "HTTP 403: Forbidden"
-            # (opaque) into something that usually tells us what actually
-            # happened: auth scheme changed, endpoint moved, deprecation
-            # notice, etc. Truncated to 200 chars to avoid flooding the
-            # terminal if the server returns a full HTML error page.
-            try:
-                body = exc.read().decode("utf-8", "replace")[:200]
-            except Exception:  # pylint: disable=broad-except
-                body = "(could not read response body)"
-            print(f"\n{RED}HTTP error {exc.code}:{RESET} {exc.reason}")
-            if body:
-                print(f"  {DIM}{body}{RESET}")
-            if exc.code == 401:
-                print(
-                    "Invalid or expired token. Run 'claude' to renew "
-                    "and restart this script."
-                )
-                sys.exit(1)
-            print(f"Retrying in {REFRESH_INTERVAL_SECONDS}s...\n")
+            # Refresh if needed
+            if now - last_refresh >= REFRESH_INTERVAL_SECONDS:
+                try:
+                    limits = fetch_usage(access_token)
+                    last_refresh = now
+                except urllib.error.HTTPError as e:
+                    error_body = ""
+                    try:
+                        error_body = e.read().decode("utf-8")
+                    except Exception:
+                        pass
+                    print(f"{RED}API error {e.code}: {error_body}{RESET}", flush=True)
+                    time.sleep(10)
+                    continue
+                except urllib.error.URLError as e:
+                    print(f"{RED}Network error: {e.reason}{RESET}", flush=True)
+                    time.sleep(10)
+                    continue
 
-        except urllib.error.URLError as exc:
-            print(
-                f"\n{YELLOW}Network error:{RESET} {exc.reason}. "
-                f"Retrying in {REFRESH_INTERVAL_SECONDS}s...\n"
-            )
+                clear_screen()
+                print(render_dashboard(limits))
+                print()
 
-        except KeyboardInterrupt:
-            print(f"\n{DIM}Monitor stopped.{RESET}\n")
-            sys.exit(0)
+            # Wait with interruptible sleep
+            sleep_time = min(1, REFRESH_INTERVAL_SECONDS - (now - last_refresh))
+            if sleep_time > 0:
+                select.select([sys.stdin], [], [], sleep_time)
 
-        except Exception as exc:  # pylint: disable=broad-except
-            print(f"\n{RED}Unexpected error:{RESET} {exc}\n")
-
-        try:
-            _interruptible_sleep(REFRESH_INTERVAL_SECONDS)
-        except KeyboardInterrupt:
-            print(f"\n{DIM}Monitor stopped.{RESET}\n")
-            sys.exit(0)
+    except KeyboardInterrupt:
+        print(f"\n{DIM}Goodbye!{RESET}")
+        sys.exit(0)
 
 
 if __name__ == "__main__":
